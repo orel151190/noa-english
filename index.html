@@ -377,7 +377,8 @@ function listen(){
    Speech recognition (Chrome / Google) checks what she said; MediaRecorder keeps a copy so she can hear herself.
    If recognition is not available (e.g. inside the Claude app), a parent confirms with ✅ / 🔁. */
 const SRC = window.SpeechRecognition || window.webkitSpeechRecognition || null;
-let SR_ALONE=false; try{ SR_ALONE=localStorage.getItem('noaSrAlone')==='1'; }catch(e){}
+const IS_ANDROID=/Android/i.test(navigator.userAgent);
+let SR_ALONE=IS_ANDROID; try{ const v=localStorage.getItem('noaSrAlone'); if(v!==null) SR_ALONE=v==='1'; }catch(e){}
 const LETTER_SAY={A:['a','ay','hey','eh','eight'],B:['b','be','bee','bea'],C:['c','see','sea','si','she'],D:['d','dee','the','de'],E:['e','ee','he'],F:['f','ef','eff','if'],
  G:['g','gee','jee','ji'],H:['h','age','aitch','each','edge','eight'],I:['i','eye','aye','hi','ai'],J:['j','jay','jae'],K:['k','kay','okay','ok'],L:['l','el','elle','hell'],M:['m','em','am','them'],
  N:['n','en','and','in'],O:['o','oh','owe'],P:['p','pee','pea','pe'],Q:['q','cue','queue','kyu'],R:['r','are','our','ar'],S:['s','es','ass','yes'],T:['t','tee','tea','ti'],U:['u','you','yu'],
@@ -393,7 +394,7 @@ async function startRec(){
       try{ mr.stop(); }catch(e){ st.getTracks().forEach(t=>t.stop()); r(null); } }) };
   }catch(e){ return {denied:true}; }
 }
-function recognize(ms=5000){
+function recognize(ms=6000,onReady){
   return new Promise(res=>{
     if(!SRC) return res({out:[],err:'none'});
     let out=[], err=null, done=false;
@@ -401,6 +402,7 @@ function recognize(ms=5000){
       const r=new SRC(); r.lang='en-US'; r.maxAlternatives=5; r.interimResults=false; r.continuous=false;
       r.onresult=e=>{ for(const x of e.results) for(const a of x) out.push(a.transcript); };
       r.onerror=e=>{ err=e.error; };
+      r.onaudiostart=()=>{ if(onReady) onReady(); };
       r.onend=()=>{ if(!done){ done=true; res({out,err}); } };
       r.start(); rec=r;
       setTimeout(()=>{ try{ r.stop(); }catch(e){} },ms);
@@ -408,14 +410,15 @@ function recognize(ms=5000){
     }catch(e){ res({out:[],err:'start'}); }
   });
 }
-async function listenAndRecord(withSR){
+async function listenAndRecord(withSR,onReady){
   let recd=null;
   if(!withSR || !SR_ALONE) recd=await startRec();
   if(recd&&recd.denied) return {denied:true};
-  if(!withSR){ await wait(3200); return {heard:[],blob:recd?await recd.stop():null}; }
-  let r=await recognize();
+  if(!withSR){ if(onReady) onReady(); await wait(3200); return {heard:[],blob:recd?await recd.stop():null}; }
+  let r=await recognize(6000,onReady);
   let blob=recd?await recd.stop():null;
-  if(r.err==='audio-capture' && recd){ SR_ALONE=true; try{ localStorage.setItem('noaSrAlone','1'); }catch(e){} r=await recognize(); }
+  const clash = recd && (r.err==='audio-capture' || (!(r.out||[]).length && (r.err==='no-speech'||r.err==='timeout') && blob && blob.size>6000));
+  if(clash){ SR_ALONE=true; try{ localStorage.setItem('noaSrAlone','1'); }catch(e){} return {heard:[],err:'retry',blob}; }
   if(r.err==='not-allowed'||r.err==='service-not-allowed') return {denied:true,blob};
   return {heard:r.out||[],err:r.err,blob};
 }
@@ -423,61 +426,104 @@ let meAudio=null;
 function playBlob(blob){ return new Promise(res=>{ if(!blob) return res(); try{ if(meAudio) meAudio.pause(); meAudio=new Audio(URL.createObjectURL(blob)); meAudio.onended=res; meAudio.onerror=res; meAudio.play().catch(res); setTimeout(res,6000);}catch(e){res();} }); }
 
 /* el: container · target: what to say · kind: 'word' | 'sent' | 'letter' | 'sound' · sound: audio key for kind 'sound' */
-function speakPanel(el,{target,keys,kind='word',sound,onDone,autoModel=true,title}){
-  const model=(slow)=> kind==='sound' ? play(sound) : kind==='letter' ? play('L:'+target) : say(target,false,slow?.6:undefined);
-  const shown = kind==='sound' ? `<span class="en">${target}</span> 🔊` : `<span class="en">${target}</span>`;
+/* ---------- the system decides – never asks the user whether she was right ----------
+   words / sentences / letter names: speech recognition
+   letter sounds: recognition of how a sound is usually written ("mmm", "sss", "buh"…); if that fails she says the example word, which recognition checks
+   no recognition at all (blocked / unsupported): her recording is checked for real voice, and a spoken try counts */
+const SOUND_SAY={A:['a','ah','uh','at','an','and','ant','add'],B:['b','be','bee','buh','bah','but','bub'],C:['c','k','kay','cuh','cut','cat','kick','ck'],D:['d','dee','duh','the','da','dad'],
+ E:['e','eh','ed','egg','ah'],F:['f','ff','eff','if','off','of','fuh'],G:['g','gee','guh','go','got','gah'],H:['h','huh','ha','hah','hey','ho'],I:['i','it','in','is','ick','e'],
+ J:['j','jay','juh','jaw','ja','jump'],K:['k','c','kay','cuh','cut','kick','ck','ok'],L:['l','ll','el','la','all','al'],M:['m','mm','hmm','um','em','am','mmm'],N:['n','nn','en','in','an','no','and'],
+ O:['o','oh','ah','on','odd','aw','awe','ok'],P:['p','pee','puh','pa','pop','pe'],Q:['q','qu','kw','queue','cue','quick','kwa','quack'],R:['r','rr','are','er','ur','or','ar'],
+ S:['s','ss','yes','is','as','ess','sss'],T:['t','tea','tee','tuh','to','ta','tut'],U:['u','uh','up','um','huh','a','ah'],V:['v','vv','vee','of','van','vuh'],
+ W:['w','wuh','wa','what','we','woo','one','wow'],X:['x','ex','ax','ks','box','kiss','ax'],Y:['y','yeah','ya','yes','yuh','why','yo'],Z:['z','zz','zee','is','buzz','zoo','was']};
+function soundHeard(got,L){
+  const allow=SOUND_SAY[L]||[L.toLowerCase()], l=L.toLowerCase();
+  return got.some(h=>norm(h).split(' ').some(w=>{ const squeezed=w.replace(/(.)\1+/g,'$1');
+    return allow.includes(w)||allow.includes(squeezed)||(/^(.)\1*$/.test(w)&&w[0]===l); }));
+}
+async function decodeTo16k(buf){
+  const ctx=new (window.AudioContext||window.webkitAudioContext)();
+  const a=await ctx.decodeAudioData(buf.slice(0)); try{ ctx.close(); }catch(e){}
+  const off=new OfflineAudioContext(1,Math.max(Math.ceil(a.duration*16000),1600),16000);
+  const src=off.createBufferSource(); src.buffer=a; src.connect(off.destination); src.start();
+  return (await off.startRendering()).getChannelData(0);
+}
+/* did the recording contain real voice? (≥ 0.15 s clearly above the background) */
+async function hasVoice(blob){
+  try{
+    const x=await decodeTo16k(await blob.arrayBuffer()), fr=160, e=[];
+    for(let i=0;i+fr<=x.length;i+=fr){ let s=0; for(let j=0;j<fr;j++) s+=x[i+j]*x[i+j]; e.push(Math.sqrt(s/fr)); }
+    const sorted=[...e].sort((a,b)=>a-b), floor=sorted[Math.floor(sorted.length*.2)]||0, peak=sorted[sorted.length-1]||0;
+    return peak>0.02 && e.filter(v=>v>Math.max(floor*4,peak*.25)).length>=15;
+  }catch(e){ return false; }
+}
+
+function speakPanel(el,{target,keys,kind='word',sound,word,onDone,autoModel=true,title}){
+  let stage = kind;                       // 'sound' may switch to 'word' (the example word)
+  let tgt = target;
+  const model=(slow)=> stage==='sound' ? play(sound)
+    : kind==='sound' ? (async()=>{ await play(sound); await wait(350); await say(word,false,slow?.6:undefined); })()
+    : kind==='letter' ? play('L:'+tgt) : say(tgt,false,slow?.6:undefined);
   let tries=0, busy=false, lastBlob=null, finished=false;
   const finish=()=>{ if(finished) return; finished=true; onDone(); };
+  const header=()=> stage==='sound' ? `${title||'🎤 עכשיו את – תגידי את הצליל:'} <b style="color:#ff4f9a"><span class="en">${tgt}</span> 🔊</b>`
+    : `${stage==='word'&&kind==='sound'?'🎤 עכשיו תגידי את המילה:':(title||'🎤 עכשיו את! תגידי בקול:')} <b style="color:#ff4f9a"><span class="en">${stage==='word'&&kind==='sound'?word:tgt}</span></b>`;
   el.innerHTML=`<div class="spk">
-    <div class="spkT">${title||'🎤 עכשיו את! תגידי בקול:'} <b style="color:#ff4f9a">${shown}</b></div>
+    <div class="spkT" id="spkT">${header()}</div>
     <button class="mic" id="mic">🎤</button>
     <div class="heard" id="heard">לחצי על המיקרופון ותגידי</div>
     <div class="row" style="margin-top:8px">
       <button class="btn" id="mdl">🔊 איך אומרים</button>
       <button class="btn" id="me" style="display:none">▶ שמעי את עצמך</button>
     </div>
-    <div class="row" id="par" style="display:none;margin-top:8px"><button class="btn go" id="pOk">✅ אמרה נכון</button><button class="btn" id="pFix">🔁 עוד פעם</button></div>
     <button class="parent" id="skip">⏭ דלגי</button></div>`;
   const q=s=>el.querySelector(s), heard=q('#heard'), mic=q('#mic');
   q('#mdl').onclick=()=>model(tries>0);
-  q('#me').onclick=()=>playBlob(lastBlob);
+  q('#me').onclick=async()=>{ if(lastBlob) return playBlob(lastBlob);
+    if(busy) return; busy=true; heard.textContent='🎙️ תגידי שוב – מקליטה אותך…'; const rr=await startRec();
+    if(rr&&rr.stop){ await wait(3000); lastBlob=await rr.stop(); heard.textContent='🎧 זו את:'; await playBlob(lastBlob); } busy=false; };
   q('#skip').onclick=()=>{ try{rec&&rec.abort();}catch(e){} finish(); };
-  q('#pOk').onclick=()=>{ q('#pOk').disabled=true; finish(); };
-  q('#pFix').onclick=async()=>{ tries++; heard.innerHTML='<b>הקשיבי ותגידי שוב:</b>'; await play('p:Repeat after me.'); await wait(250); await model(true); };
-  const parentMode=(msg)=>{ q('#par').style.display=''; if(msg) heard.innerHTML=msg; };
+  if(SR_ALONE && SRC) q('#me').style.display='';
   if(autoModel) (async()=>{ await wait(400); await model(false); await wait(250); if(!busy) await play('p:Your turn! Say it.'); })();
+
+  const good=async(txt,blob)=>{ heard.innerHTML=`✅ מעולה!${txt?` שמעתי: <span class="en">"${txt}"</span>`:''}`; chime(); if(blob) await playBlob(blob); await wait(600); finish(); };
+  const again=async(said)=>{
+    tries++;
+    if(tries>=3){ heard.innerHTML=`${said}<br>ניסית יפה מאוד! 💖`; await wait(900); finish(); return; }
+    heard.innerHTML=`${said}<br><b>${tries===1?'כמעט! הקשיבי ונסי שוב':'בואי נגיד ביחד, לאט'}</b>`;
+    oops(); await wait(300); await model(true);
+  };
 
   mic.onclick=async()=>{
     if(busy||finished) return; busy=true;
     try{ speechSynthesis.cancel(); if(cur) cur.pause(); }catch(e){}
-    mic.classList.add('live'); heard.textContent='מקשיבה... 👂 תגידי עכשיו';
-    const useSR = !!SRC && kind!=='sound';
-    const r=await listenAndRecord(useSR);
+    mic.classList.add('live'); heard.textContent='רגע… ⏳';
+    const r=await listenAndRecord(!!SRC,()=>{ heard.textContent='מקשיבה... 👂 תגידי עכשיו!'; });
     mic.classList.remove('live'); busy=false;
-    if(r.denied){ parentMode('צריך לאשר את המיקרופון בכרום 🎤 – בינתיים אמא/אבא מאשרים'); return; }
     if(r.blob){ lastBlob=r.blob; q('#me').style.display=''; }
-    /* sounds (phonics): no automatic check – she hears herself next to the teacher */
-    if(!useSR){
-      heard.innerHTML='🎧 שמעי את עצמך – ואז את המורה. נשמע אותו דבר?';
-      await playBlob(r.blob); await wait(400); await model(false);
-      parentMode(); return;
+    if(r.err==='retry'){ heard.innerHTML='👍 לחצי שוב על המיקרופון ותגידי שוב – עכשיו הבדיקה תעבוד'; return; }
+    const noCheck = r.denied || !SRC || (r.err && !(r.heard||[]).length && !['no-speech','timeout','aborted'].includes(r.err));
+    if(noCheck){
+      /* recognition unavailable: the system checks that she really spoke */
+      if(r.denied && !r.blob){ heard.innerHTML='צריך לאשר את המיקרופון בכרום 🎤 (מנעול ליד הכתובת ← מיקרופון ← אפשר)'; return; }
+      if(r.blob && await hasVoice(r.blob)) return good('',r.blob);
+      return again('לא שמעתי 🙉 – תגידי קצת יותר חזק');
     }
     const got=r.heard||[];
     let ok=false;
-    if(kind==='letter') ok=got.some(h=>norm(h).split(' ').some(w=>(LETTER_SAY[target]||[target.toLowerCase()]).includes(w)));
+    if(stage==='sound') ok=soundHeard(got,tgt)||matchWord(got,word);
+    else if(kind==='sound') ok=matchWord(got,word)||soundHeard(got,tgt);
+    else if(kind==='letter') ok=got.some(h=>norm(h).split(' ').some(w=>(LETTER_SAY[tgt]||[tgt.toLowerCase()]).includes(w)));
     else if(keys) ok=matchSentence(got,keys);
-    else ok=matchWord(got,target);
-    if(ok){
-      heard.innerHTML=`✅ מעולה! שמעתי: <span class="en">"${got[0]}"</span>`;
-      chime(); await playBlob(r.blob); await wait(250); finish(); return;
+    else ok=matchWord(got,tgt);
+    if(ok) return good(got[0],r.blob);
+    if(stage==='sound' && got.length){
+      /* a lone sound is hard to recognise – check it through the example word instead */
+      stage='word'; q('#spkT').innerHTML=header();
+      heard.innerHTML=`שמעתי: <span class="en">"${got[0]}"</span><br><b>עכשיו תגידי את המילה – כמו בצליל הזה</b>`;
+      await wait(300); await model(false); return;
     }
-    if(r.err && !got.length && r.err!=='no-speech' && r.err!=='timeout'){ parentMode('הבדיקה האוטומטית לא זמינה עכשיו – אמא/אבא מאשרים 👍'); return; }
-    tries++;
-    const said = got.length ? `שמעתי: <span class="en">"${got[0]}"</span>` : 'לא שמעתי 🙉 – תגידי קצת יותר חזק, קרוב לטאבלט';
-    if(tries>=3){ heard.innerHTML=`${said}<br>ניסית יפה מאוד! 💖`; await wait(900); finish(); return; }
-    heard.innerHTML=`${said}<br><b>${tries===1?'כמעט! הקשיבי ונסי שוב':'בואי נגיד ביחד, לאט'}</b>`;
-    oops(); await wait(300); await model(true);
-    parentMode();   // a parent can always approve if the check misheard her
+    await again(got.length ? `שמעתי: <span class="en">"${got[0]}"</span>` : 'לא שמעתי 🙉 – תגידי קצת יותר חזק');
   };
 }
 /* kept for the screens that already call it */
@@ -538,11 +584,9 @@ function success(next){
   if(done>=5){
     setTimeout(()=>{ fanfare(); confetti(60); $('#ov').classList.add('show'); say('Wonderful, Noa! Five stars!'); },1300);
     pendingNext = next;
-  } else nextTimer=setTimeout(next,1700);
+  } else setTimeout(next,1700);
 }
-let pendingNext=null, nextTimer=null;
-/* leaving a screen cancels the pending 'go to next task' so the old task never pops back */
-function cancelNext(){ clearTimeout(nextTimer); nextTimer=null; pendingNext=null; }
+let pendingNext=null;
 $('#ovBtn').onclick=()=>{
   total++; try{localStorage.setItem('noaStars',total);}catch(e){}
   done=0; drawStars(); $('#ov').classList.remove('show'); confetti(30);
@@ -596,8 +640,8 @@ function home(){
 
 
 /* ---------- parent settings ---------- */
-function goSettings(){ session=null; cancelNext(); try{cur&&cur.pause();speechSynthesis.cancel();}catch(e){} $('#homeBtn').classList.remove('hide'); settings(); window.scrollTo(0,0); }
-function goHome(){ session=null; cancelNext(); try{cur&&cur.pause();speechSynthesis.cancel();}catch(e){} home(); window.scrollTo(0,0); }
+function goSettings(){ session=null; try{cur&&cur.pause();speechSynthesis.cancel();}catch(e){} $('#homeBtn').classList.remove('hide'); settings(); window.scrollTo(0,0); }
+function goHome(){ session=null; try{cur&&cur.pause();speechSynthesis.cancel();}catch(e){} home(); window.scrollTo(0,0); }
 function tap(el,fn){ let last=0; const h=e=>{ const n=Date.now(); if(n-last<400) return; last=n; e.preventDefault(); fn(); };
   el.addEventListener('click',h); el.addEventListener('touchend',h,{passive:false}); el.addEventListener('pointerup',e=>{ if(e.pointerType!=='mouse') h(e); }); }
 tap($('#setBtn'),goSettings); tap($('#navSet'),goSettings);
@@ -636,7 +680,7 @@ function settings(){
    </div>`;
   $('#spOn').onchange=e=>{ SET.speak=e.target.checked; saveSet(); };
   $('#spT').onclick=async()=>{ $('#spTr').textContent='תגידי: hello …'; const r=await listenAndRecord(!!SRC);
-    $('#spTr').textContent = r.denied?'❌ המיקרופון חסום – צריך לאשר בכרום':(r.heard&&r.heard.length?'✅ שמעתי: '+r.heard[0]:(SRC?'⚠️ לא שמעתי מילים – נסי שוב':'⚠️ אין זיהוי דיבור בדפדפן הזה – יעבוד אישור הורה'));
+    $('#spTr').textContent = r.denied?'❌ המיקרופון חסום – צריך לאשר בכרום':(r.heard&&r.heard.length?'✅ שמעתי: '+r.heard[0]:(SRC?'⚠️ לא שמעתי מילים – נסי שוב':'⚠️ אין זיהוי דיבור בדפדפן הזה – האפליקציה תבדוק רק שנועה דיברה'));
     if(r.blob) playBlob(r.blob); };
   const heOn=$('#heOn'); heOn.onchange=()=>{ SET.heOn=heOn.checked; saveSet(); };
   if(vs.length){
@@ -776,7 +820,7 @@ function soundGame(){
   const s=async()=>{ const id=++seqId; await play('S:'+L); if(id!==seqId) return; await wait(300); await play('S:'+L); };
   $('#sp').onclick=s; intro(s); $('#back').onclick=soundsHome;
   wireOptions($('#opts'), b=>b.dataset.v===L, ()=>{ $('#msg').innerHTML=`<span class="en">${L}</span> – ${WORDS.find(w=>w.w===EXAMPLE[L]).e} <span class="en">${EXAMPLE[L]}</span>`;
-    speakThen(L, soundGame, {kind:'sound', sound:'S:'+L, title:'🎤 עכשיו את – תגידי את הצליל:'}); });
+    speakThen(L, soundGame, {kind:'sound', sound:'S:'+L, word:(PHON[L]||[EXAMPLE[L]])[0], title:'🎤 עכשיו את – תגידי את הצליל:'}); });
 }
 
 /* 1c. letter writing – trace with a finger, the app checks the shape */
@@ -1187,7 +1231,7 @@ function phonGame(idx){
   app.querySelectorAll('.az').forEach(b=>b.onclick=()=>phonGame(+b.dataset.i));
   intro(seq);
   /* Noa repeats the sound; a parent confirms, or asks to hear it again */
-  speakPanel($('#micA'),{target:L.toLowerCase(), kind:'sound', sound:'S:'+L, autoModel:false, title:'🎤 עכשיו את – תגידי את הצליל:',
+  speakPanel($('#micA'),{target:L, word:w, kind:'sound', sound:'S:'+L, autoModel:false, title:'🎤 עכשיו את – תגידי את הצליל:',
     onDone:()=>success(()=>phonGame(phonIdx+1))});
 }
 
