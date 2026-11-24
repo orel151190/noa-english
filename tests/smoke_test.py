@@ -20,7 +20,19 @@ with sync_playwright() as p:
     pg.wait_for_timeout(450); pg.click('#navHome'); pg.click('[data-id=pic]'); pg.wait_for_timeout(400)
     pg.evaluate("[...document.querySelectorAll('.opt')].find(b=>b.dataset.v===document.querySelector('#sp .en').textContent).click()")
     pg.wait_for_timeout(500); assert pg.locator('.spk').count() == 1, 'speak panel missing'
-    pg.click('#skip'); pg.wait_for_timeout(400); assert pg.locator('.slot.on').count() == 1, 'no star'
+    pg.click('#skip'); pg.wait_for_timeout(400)
+    assert pg.locator('.slot.on').count() == 0, 'skip must not give a star'
+    assert pg.locator('.spk').count() == 0, 'skip must move to the next question'
+    # wrong answers are never approved, even after many tries
+    res = pg.evaluate('''async()=>{ const box=document.createElement('div'); document.body.appendChild(box);
+      play=async()=>{}; say=async()=>{}; playBlob=async()=>{}; let done=null;
+      listenAndRecord=async(sr,on)=>{ on&&on(); return {heard:['hello']}; };
+      speakPanel(box,{target:'apple',autoModel:false,onDone:ok=>{done=ok;}});
+      for(let i=0;i<5;i++){ box.querySelector('#mic').click(); await new Promise(r=>setTimeout(r,1300)); }
+      listenAndRecord=async(sr,on)=>{ on&&on(); return {heard:['apple']}; };
+      const before=done; box.querySelector('#mic').click(); await new Promise(r=>setTimeout(r,1500));
+      box.remove(); return [before, done]; }''')
+    assert res[0] is None and res[1] is True, f'wrong answer approved or right answer rejected: {res}'
     # full session
     pg.wait_for_timeout(450); pg.click('#navHome'); pg.click('[data-id=session]'); pg.wait_for_timeout(300)
     for _ in range(pg.evaluate('SESSION_ORDER.length')): pg.evaluate('sessionNext()'); pg.wait_for_timeout(120)

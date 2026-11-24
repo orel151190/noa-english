@@ -10,7 +10,7 @@ Full goals, feature list, backlog and test plan: **STP.md** (read it first).
 - Target device: Samsung tablet, Chrome. Test at 360px wide and on tablet sizes.
 
 ## Rules for changes
-- The child must always end a task with success (retry hints, never a dead end). Star per task; 5 stars → overlay "mark a star on the challenge sheet".
+- Never approve a wrong answer – correctness is always decided by the app, never by the user. Help escalates with every miss (hint, slow model, demo) so the child can reach success; she can always skip (⏭), which gives no star. Star per correct task; 5 stars → overlay "mark a star on the challenge sheet".
 - Every instruction is shown in Hebrew and spoken (Hebrew via parent recording or device TTS), then the English audio. Never overlap audio.
 - New words need audio: generate with Piper (`tools/gen*.py`, voice `en-us-lessac-medium`, length_scale 1.4 / slow 2.0, ffmpeg compressor+limiter) and add keys `w:<word>` and `ws:<word>`.
 - Letter sounds `S:<A-Z>` are real Jolly Phonics recordings (`assets/jolly-phonics`, CC BY-NC-ND) – do not modify them, keep the credit line.

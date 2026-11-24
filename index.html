@@ -163,6 +163,7 @@ h1{text-align:center;font-size:clamp(30px,6vw,52px);margin:6px 0 4px;color:#b04c
 .spk{background:#fff;border-radius:26px;padding:12px 14px 6px;max-width:620px;margin:12px auto 0;box-shadow:0 6px 0 #e2d4f5;text-align:center}
 .spkT{font-size:clamp(20px,4vw,28px);margin-bottom:8px}
 .spk .mic{width:100px;height:100px;font-size:50px}
+.parent.skipNow{opacity:1;font-size:20px;background:#fff0a8;border-radius:14px;padding:6px 14px;text-decoration:none;animation:bounce 1s 2}
 /* mic */
 .micArea{text-align:center;margin-top:16px}
 .mic{width:120px;height:120px;border-radius:50%;font-size:60px;background:linear-gradient(160deg,#ff8fc4,#a77bff);color:#fff;box-shadow:0 7px 0 #8a4fd6}
@@ -465,7 +466,7 @@ function speakPanel(el,{target,keys,kind='word',sound,word,onDone,autoModel=true
     : kind==='sound' ? (async()=>{ await play(sound); await wait(350); await say(word,false,slow?.6:undefined); })()
     : kind==='letter' ? play('L:'+tgt) : say(tgt,false,slow?.6:undefined);
   let tries=0, busy=false, lastBlob=null, finished=false;
-  const finish=()=>{ if(finished) return; finished=true; onDone(); };
+  const finish=(ok)=>{ if(finished) return; finished=true; onDone(!!ok); };   // ok=false: skipped, no star
   const header=()=> stage==='sound' ? `${title||'🎤 עכשיו את – תגידי את הצליל:'} <b style="color:#ff4f9a"><span class="en">${tgt}</span> 🔊</b>`
     : `${stage==='word'&&kind==='sound'?'🎤 עכשיו תגידי את המילה:':(title||'🎤 עכשיו את! תגידי בקול:')} <b style="color:#ff4f9a"><span class="en">${stage==='word'&&kind==='sound'?word:tgt}</span></b>`;
   el.innerHTML=`<div class="spk">
@@ -482,15 +483,17 @@ function speakPanel(el,{target,keys,kind='word',sound,word,onDone,autoModel=true
   q('#me').onclick=async()=>{ if(lastBlob) return playBlob(lastBlob);
     if(busy) return; busy=true; heard.textContent='🎙️ תגידי שוב – מקליטה אותך…'; const rr=await startRec();
     if(rr&&rr.stop){ await wait(3000); lastBlob=await rr.stop(); heard.textContent='🎧 זו את:'; await playBlob(lastBlob); } busy=false; };
-  q('#skip').onclick=()=>{ try{rec&&rec.abort();}catch(e){} finish(); };
+  q('#skip').onclick=()=>{ try{rec&&rec.abort();}catch(e){} finish(false); };
   if(SR_ALONE && SRC) q('#me').style.display='';
   if(autoModel) (async()=>{ await wait(400); await model(false); await wait(250); if(!busy) await play('p:Your turn! Say it.'); })();
 
-  const good=async(txt,blob)=>{ heard.innerHTML=`✅ מעולה!${txt?` שמעתי: <span class="en">"${txt}"</span>`:''}`; chime(); if(blob) await playBlob(blob); await wait(600); finish(); };
+  const good=async(txt,blob)=>{ heard.innerHTML=`✅ מעולה!${txt?` שמעתי: <span class="en">"${txt}"</span>`:''}`; chime(); if(blob) await playBlob(blob); await wait(600); finish(true); };
   const again=async(said)=>{
     tries++;
-    if(tries>=3){ heard.innerHTML=`${said}<br>ניסית יפה מאוד! 💖`; await wait(900); finish(); return; }
-    heard.innerHTML=`${said}<br><b>${tries===1?'כמעט! הקשיבי ונסי שוב':'בואי נגיד ביחד, לאט'}</b>`;
+    /* never approve a wrong answer: more help each time, the child can always skip (no star) */
+    const help = tries===1 ? 'כמעט! הקשיבי ונסי שוב' : tries===2 ? 'בואי נגיד ביחד, לאט' : 'זה קשה – וזה בסדר! 💪 הקשיבי לאט ונסי שוב, או ⏭ דלגי ונתרגל את זה בפעם אחרת';
+    heard.innerHTML=`${said}<br><b>${help}</b>`;
+    if(tries>=3) q('#skip').classList.add('skipNow');
     oops(); await wait(300); await model(true);
   };
 
@@ -527,7 +530,9 @@ function speakPanel(el,{target,keys,kind='word',sound,word,onDone,autoModel=true
   };
 }
 /* kept for the screens that already call it */
-function micBlock(el,{target,keys,onOk}){ speakPanel(el,{target,keys,kind:keys?'sent':'word',onDone:onOk,autoModel:false}); }
+function goNext(next){ if(session) sessionNext(); else next(); }
+function micBlock(el,{target,keys,onOk,onSkip}){ speakPanel(el,{target,keys,kind:keys?'sent':'word',autoModel:false,
+  onDone:ok=>ok?onOk():goNext(onSkip||(()=>{}))}); }
 
 /* after a correct tap: say it out loud, then the star */
 function speakThen(target,next,o={}){
@@ -536,7 +541,7 @@ function speakThen(target,next,o={}){
   const box=document.createElement('div'); box.className='micArea';
   const anchor=app.querySelector('#msg')||app.lastElementChild; anchor.after(box);
   setTimeout(()=>box.scrollIntoView({behavior:'smooth',block:'center'}),100);
-  speakPanel(box,{...o,target,onDone:()=>success(next)});
+  speakPanel(box,{...o,target,onDone:ok=>ok?success(next):goNext(next)});
 }
 
 let ac=null;
@@ -779,7 +784,7 @@ function learn(){
   const card=$('#card');
   let micOn=false;
   card.onclick=()=>{ card.classList.toggle('flip'); if(card.classList.contains('flip')){ say(w.w);
-    if(!micOn){ micOn=true; micBlock($('#micA'),{target:w.w,onOk:()=>success(learn)}); } } };
+    if(!micOn){ micOn=true; micBlock($('#micA'),{target:w.w,onOk:()=>success(learn),onSkip:learn}); } } };
   $('#sp').onclick=()=>say(w.w);
   $('#ls').onclick=()=>letterSound(w.l,false);
   $('#skip').onclick=learn;
@@ -940,7 +945,7 @@ function writeGame(){
       return;
     }
     tries++;
-    if(tries>=3){ done=true; missed=[]; render(); $('#msg').textContent='ניסית יפה מאוד! 💖'; success(writeGame); return; }
+    if(tries>=3){ oops(); $('#msg').innerHTML='זה קשה – וזה בסדר! 💪 בואי נראה שוב איך כותבים, ואז נסי שוב'; missed=[]; user=[]; render(); setTimeout(()=>$('#demo')&&$('#demo').click(),600); return; }
     oops();
     tryAgain($('#msg'));
     if(inside<.65){ missed=[]; $('#msg').innerHTML+='<br>נסי להישאר על הקו הסגול – לחצי 🧽 מחק'; }
@@ -958,7 +963,7 @@ function sayGame(){
     <div class="micArea" id="micA"></div>
     <div class="msg" id="msg"></div>`;
   $('#sp').onclick=()=>{ say(w.w); $('#sp').innerHTML=`🔊 <span class="en">${w.w}</span>`; };
-  micBlock($('#micA'),{target:w.w,onOk:()=>{ $('#msg').innerHTML=`<span class="en">${w.w}</span> = ${w.he}`; success(sayGame); }});
+  micBlock($('#micA'),{target:w.w,onOk:()=>{ $('#msg').innerHTML=`<span class="en">${w.w}</span> = ${w.he}`; success(sayGame); },onSkip:sayGame});
   intro(null);
 }
 
@@ -1055,7 +1060,7 @@ function talkGame(){
   $('#hint').onclick=()=>say(ans);
   $('#slow').onclick=()=>say(ans,false,.6);
   intro(model);
-  micBlock($('#micA'),{target:ans, keys:t.k, onOk:()=>success(talkGame)});
+  micBlock($('#micA'),{target:ans, keys:t.k, onOk:()=>success(talkGame), onSkip:talkGame});
 }
 
 
@@ -1232,7 +1237,7 @@ function phonGame(idx){
   intro(seq);
   /* Noa repeats the sound; a parent confirms, or asks to hear it again */
   speakPanel($('#micA'),{target:L, word:w, kind:'sound', sound:'S:'+L, autoModel:false, title:'🎤 עכשיו את – תגידי את הצליל:',
-    onDone:()=>success(()=>phonGame(phonIdx+1))});
+    onDone:ok=>ok?success(()=>phonGame(phonIdx+1)):goNext(()=>phonGame(phonIdx+1))});
 }
 
 drawStars(); home();
