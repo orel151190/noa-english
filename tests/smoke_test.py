@@ -33,6 +33,14 @@ with sync_playwright() as p:
       const before=done; box.querySelector('#mic').click(); await new Promise(r=>setTimeout(r,1500));
       box.remove(); return [before, done]; }''')
     assert res[0] is None and res[1] is True, f'wrong answer approved or right answer rejected: {res}'
+    # reward: one star only after 10 successful tasks
+    pg.evaluate("for(let i=0;i<9;i++) success(()=>{})"); pg.wait_for_timeout(1600)
+    assert not pg.is_visible('#ov'), 'star overlay before 10 tasks'
+    assert pg.locator('.prog i.on').count() == 9, 'progress dots'
+    pg.evaluate("success(()=>{})"); pg.wait_for_timeout(1800)
+    assert pg.is_visible('#ov'), 'no star overlay after 10 tasks'
+    pg.click('#ovBtn'); pg.wait_for_timeout(300)
+    assert pg.locator('.prog i.on').count() == 0, 'progress not reset'
     # full session
     pg.wait_for_timeout(450); pg.click('#navHome'); pg.click('[data-id=session]'); pg.wait_for_timeout(300)
     for _ in range(pg.evaluate('SESSION_ORDER.length')): pg.evaluate('sessionNext()'); pg.wait_for_timeout(120)
